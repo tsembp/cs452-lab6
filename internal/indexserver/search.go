@@ -1,21 +1,45 @@
-
 package indexserver
 
 import (
 	"fmt"
+	"strings"
 
+	"github.com/ucy-coast/websearch/internal/invertedindex"
 	"github.com/ucy-coast/websearch/internal/rpc_api"
 )
 
 func (s *IndexServer) Search(args *rpc_api.SearchArgs, reply *[]rpc_api.SearchResult) error {
-	// TODO: implement search logic
+	queryWords := strings.Fields(strings.ToLower(args.Query))
 
-	// Hint:
-	// - Extract the query string from args.Query and split it into words (e.g., using strings.Fields).
-	// - Normalize the words to lowercase for consistent matching.
-	// - Call s.index.SearchInMemoryTopK(queryWords, args.TopK) to get top-K internal results.
-	// - Convert each internal result into an rpc_api.SearchResult.
-	// - Set *reply to the resulting slice.
+	var results []invertedindex.Result
+	var err error
+	if s.useMemory {
+		// The index loads lazily, so concurrent RPCs must not initialize it together.
+		s.memoryMu.Lock()
+		results, err = s.index.SearchInMemoryTopK(queryWords, args.TopK)
+		s.memoryMu.Unlock()
+	} else {
+		results, err = s.index.SearchScanFiles(queryWords)
+		if err == nil {
+			k := args.TopK
+			if k < 0 {
+				k = 0
+			}
+			if k < len(results) {
+				results = results[:k]
+			}
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("search index: %w", err)
+	}
 
-	return fmt.Errorf("Search: not implemented")
+	*reply = make([]rpc_api.SearchResult, len(results))
+	for i, result := range results {
+		(*reply)[i] = rpc_api.SearchResult{
+			Document: result.Document,
+			Matches:  result.Matches,
+		}
+	}
+	return nil
 }
